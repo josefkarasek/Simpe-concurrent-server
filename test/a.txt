@@ -1,0 +1,2 @@
+Testovaci soubor.
+ Ma jen par radku.
