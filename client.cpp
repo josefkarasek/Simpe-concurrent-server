@@ -2,7 +2,6 @@
 // Name        : client.cpp
 // Author      : xkaras27
 // Version     :
-// Copyright   : none
 // Description : programming assignment 2: concurrent server
 //============================================================================
 

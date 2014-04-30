@@ -2,7 +2,6 @@
 // Name        : server.cpp
 // Author      : xkaras27
 // Version     :
-// Copyright   : http://beej.us/guide/bgnet/output/html/multipage/clientserver.html#simpleserver
 // Description : programming assignment 2: concurrent server
 //============================================================================
 
@@ -134,7 +133,7 @@ int main(int argc, char **argv) {
 
         if (!fork()) { // this is the child process
             close(sockfd); // child doesn't need the listener
-            if (send(new_fd, "220 system ready\r\n", 18, 0) == -1) {
+            if (send(new_fd, "220 system ready\r\n", 19, 0) == -1) {
                 cerr << "send: " << strerror(errno) << endl;
                 close(new_fd);
                 exit(2);
@@ -153,7 +152,7 @@ int main(int argc, char **argv) {
 
                     if((lf = fopen(request.c_str(), "r")) == NULL) {
                         cerr << "server: Cannot open file " << request << endl;
-                        send(new_fd, "550 ERROR\n", 10, 0);
+                        send(new_fd, "550 ERROR\n", 11, 0);
                         close(new_fd);
                         exit(2);
                     }
@@ -170,8 +169,10 @@ int main(int argc, char **argv) {
                         memset(&buff, 0, 1000);
                         gettimeofday(&tv, NULL);
                         if(cycles >= atoi(destination.speed.c_str())) {
-                           usleep(1000000 - (tv.tv_usec - time));
-                           cycles = 0;
+                            if((time_total = tv.tv_usec - time) > 1000000)
+                                time_total = 1000000;
+                            usleep(1000000 - time_total);
+                            cycles = 0;
                         }
                     }
                     gettimeofday(&tv, NULL);
@@ -200,7 +201,7 @@ int main(int argc, char **argv) {
  */
 string getFileName(char *buff) {
     string name = "";
-    for(int i=5; i!='\n' && i!='\r'; ++i)
+    for(int i=5; buff[i]!='\n' && buff[i]!='\r'; ++i)
         name += buff[i];
     return name;
 }
