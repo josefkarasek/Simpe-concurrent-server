@@ -19,11 +19,7 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <signal.h>
-#include <semaphore.h>
-#include <sys/mman.h>   //semaphore memory mapping
-#include <sys/shm.h>    //shared memory
-#include <sys/ipc.h>
-#include <sys/stat.h>
+#include <sys/time.h>
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -34,7 +30,6 @@
 using namespace std;
 
 bool parse(char **argv);
-bool get_sem(void);
 string form_string(char* input, int begin, int end);
 string getFileName(char *buff);
 void sigchld_handler(int s);
@@ -47,21 +42,22 @@ typedef struct credentials {
 
 Tcredentials destination;
 const int BACKLOG = 20;
-sem_t *mutex;  //shared memory access control
 
 
 
 int main(int argc, char **argv) {
-    int sockfd, new_fd, b, client, rv, yes=1;                                //sockets
+    int sockfd, new_fd, b, client, rv, yes=1;  //sockets
     socklen_t sin_size;
-    struct sockaddr_storage their_addr; // connector's address information
+    struct sockaddr_storage their_addr;
     FILE* fd;
-    struct sockaddr_in sa;                            //IP address info
+    struct sockaddr_in sa;
     struct addrinfo hints, *servinfo, *p;
     struct sigaction action;
     char s[INET6_ADDRSTRLEN];
+    struct timeval tv = { 0 };
     string request;
-
+    long int time, time_total;
+    int bytes = 0, temp = 0;
     // Check arguments
     if(argc == 5) {
         if(parse(argv) == false) {
@@ -78,14 +74,13 @@ int main(int argc, char **argv) {
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE; // use my IP
+    hints.ai_flags = AI_PASSIVE;
 
     if ((rv = getaddrinfo(NULL, destination.port.c_str(), &hints, &servinfo)) != 0) {
         cerr << "getaddrinfo: " << gai_strerror(rv) << endl;
         return 2;
     }
 
-    // loop through all the results and bind to the first we can
     for(p = servinfo; p != NULL; p = p->ai_next) {
         if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
             cerr << "socket: " << strerror(errno) << endl;
@@ -109,14 +104,14 @@ int main(int argc, char **argv) {
         cerr << "server: failed to bind" << endl;
         return 2;
     }
-    freeaddrinfo(servinfo); // all done with this structure
+    freeaddrinfo(servinfo);
 
     if (listen(sockfd, BACKLOG) == -1) {
         cerr << "listen: " << strerror(errno) << endl;
         return 2;
     }
 
-    action.sa_handler = sigchld_handler; // reap all dead processes
+    action.sa_handler = sigchld_handler;
     sigemptyset(&action.sa_mask);
     action.sa_flags = SA_RESTART;
 
@@ -124,10 +119,9 @@ int main(int argc, char **argv) {
         cerr << "sigaction: " << strerror(errno) << endl;
         return 2;
     }
-//    get_sem();
     cout << "server: waiting for clients..." << endl;
 
-    while(1) {  // main accept() loop
+    while(1) {
         sin_size = sizeof their_addr;
         new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
         if (new_fd == -1) {
@@ -142,65 +136,68 @@ int main(int argc, char **argv) {
             close(sockfd); // child doesn't need the listener
             if (send(new_fd, "220 system ready\r\n", 18, 0) == -1) {
                 cerr << "send: " << strerror(errno) << endl;
-                exit(0);
+                close(new_fd);
+                exit(2);
             }
-            ifstream local_file;
-            string line;
             FILE *lf;
             char buff[1000];
             while(1) {
                 if(read(new_fd, buff, 999) < 0) {
                     cerr << "read: " << strerror(errno) << endl;
-                    exit(0);
+                    close(new_fd);
+                    exit(2);
                 }
                 if(strncmp(buff, "FILE", 4) == 0) {
                     request = getFileName(buff);
                     cout << "server: sending " << request << endl;
 
-//                    sem_wait(mutex);
-//                    local_file.open(request.c_str(), ios::in);
-                    lf = fopen(request.c_str(), "r");
-                    if(lf == NULL) {
-                        cerr << "Cannot open file " << request << endl;
-                        exit(0);
+                    if((lf = fopen(request.c_str(), "r")) == NULL) {
+                        cerr << "server: Cannot open file " << request << endl;
+                        send(new_fd, "550 ERROR\n", 10, 0);
+                        close(new_fd);
+                        exit(2);
                     }
-                    while(fread(buff, sizeof(char),999, lf) > 0) {
-                        cout << buff;
-//                        memcpy(&buff, line.c_str(), strlen(line.c_str()));
-                        send(new_fd, buff, 999, 0);
+                    memset(&buff, 0, 1000);
+                    int cycles = 0;
+                    gettimeofday(&tv, NULL);
+                    time_total = tv.tv_usec;
+                    while((bytes = fread(buff, sizeof(char), 999, lf)) > 0) {
+                        temp += bytes;
+                        gettimeofday(&tv, NULL);
+                        time = tv.tv_usec;
+                        send(new_fd, buff, bytes, 0);
+                        cycles++;
                         memset(&buff, 0, 1000);
+                        gettimeofday(&tv, NULL);
+                        if(cycles >= atoi(destination.speed.c_str())) {
+                           usleep(1000000 - (tv.tv_usec - time));
+                           cycles = 0;
+                        }
                     }
-                    local_file.close();
-//                    sem_post(mutex);
+                    gettimeofday(&tv, NULL);
+                    cout << "server: bytes sent: " << temp << endl;
+                    fflush(stdout);
                     break;
+                } else {
+                    cerr << "Error on the network occurred." << endl;
+                    close(new_fd);
+                    fclose(lf);
+                    exit(2);
                 }
-//                else if(strncmp(buff, "QUIT", 4) == 0) {
-//
-//                }
-
             }
-
+            fclose(lf);
             close(new_fd);
             exit(0);
         }
-        close(new_fd);  // parent doesn't need this
-//        sem_destroy(mutex);
+        close(new_fd);
     }
 
     return 0;
 }
 
-
-//bool get_sem(void)
-//{
-//    if((mutex = (sem_t*) mmap(NULL, sizeof(sem_t), PROT_READ | \
-//            PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, 0, 0)) == MAP_FAILED)
-//        return false;
-//    if(sem_init(mutex, 1, 1) == -1)
-//        return false;
-//    return true;
-//}
-
+/*
+ * Extract file name from answer
+ */
 string getFileName(char *buff) {
     string name = "";
     for(int i=5; i!='\n' && i!='\r'; ++i)
@@ -240,13 +237,17 @@ string form_string(char* input, int begin, int end) {
     return output;
 }
 
-
+/*
+ * Beej
+ */
 void sigchld_handler(int s)
 {
     while(waitpid(-1, NULL, WNOHANG) > 0);
 }
 
-// get sockaddr, IPv4 or IPv6:
+/*
+ * Beej
+ */
 void *get_in_addr(struct sockaddr *sa)
 {
     if (sa->sa_family == AF_INET) {

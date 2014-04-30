@@ -39,7 +39,7 @@ char buff[1000];
 
 int main(int argc, char **argv) {
     FILE *out_fd;
-    int client_socket;                                //sockets
+    int client_socket, bytes;                         //sockets
     struct sockaddr_in server_address;                //IP address info
     struct hostent *server_ip;                        //DNS resolver
     struct timeval timeout;
@@ -77,7 +77,7 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    if (setsockopt (client_socket, SOL_SOCKET, SO_RCVTIMEO, \
+    if(setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, \
             (char *)&timeout, sizeof(timeout)) < 0) {
         cerr << "setsockopt: " << strerror(errno) << endl;
         close(client_socket);
@@ -92,25 +92,35 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    //Welcome message
     recv(client_socket, buff, 999, 0);
     cout << "client: " << buff;
     memset(&buff, 0, 1000);
+    //Form&send command
     string command = "FILE " + destination.file + "\n";
     memcpy(&buff, command.c_str(), strlen(command.c_str()));
     send(client_socket, buff, 999, 0);
     memset(&buff, 0, 1000);
+    //Expecting answer
     if((out_fd = fopen(destination.file.c_str(), "w")) == NULL) {
         cerr << "client: cannot open output file" << endl;
         close(client_socket);
         return 2;
     }
-    while(recv(client_socket, buff, 999, 0)) {
-        cout << buff;
-        fwrite(buff, sizeof(char), 999, out_fd);
+    while((bytes = recv(client_socket, buff, 999, 0)) > 0) {
+        if(strncmp("550 ERROR", buff, 9) == 0) {
+            cout << "client: server coldn't serve the file" << endl;
+            close(client_socket);
+            fclose(out_fd);
+            unlink(destination.file.c_str());
+            return 2;
+        }
+        fwrite(buff, sizeof(char), bytes, out_fd);
         memset(&buff, 0, 1000);
     }
 
     close(client_socket);
+    fclose(out_fd);
 
     return 0;
 }
