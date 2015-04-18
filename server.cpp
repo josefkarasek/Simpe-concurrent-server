@@ -32,7 +32,7 @@ bool parse(char **argv);
 string form_string(char* input, int begin, int end);
 string getFileName(char *buff);
 void sigchld_handler(int s);
-void *get_in_addr(struct sockaddr *sa);
+void serve_client(int new_fd);
 
 typedef struct credentials {
     string speed;
@@ -42,8 +42,6 @@ typedef struct credentials {
 Tcredentials destination;
 const int BACKLOG = 20;
 
-
-
 int main(int argc, char **argv) {
     int sockfd, new_fd, b, client, rv, yes=1;  //sockets
     socklen_t sin_size;
@@ -52,11 +50,8 @@ int main(int argc, char **argv) {
     struct sockaddr_in sa;
     struct addrinfo hints, *servinfo, *p;
     struct sigaction action;
-    char s[INET6_ADDRSTRLEN];
-    struct timeval tv = { 0 };
-    string request;
-    long int time, time_total;
-    int bytes = 0, temp = 0;
+    char s[INET_ADDRSTRLEN];
+
     // Check arguments
     if(argc == 5) {
         if(parse(argv) == false) {
@@ -128,65 +123,15 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        inet_ntop(their_addr.ss_family, get_in_addr((struct sockaddr *)&their_addr), s, sizeof s);
+        inet_ntop(their_addr.ss_family, &(((struct sockaddr_in*)(struct sockaddr *) &their_addr)->sin_addr)
+                , s, sizeof s);
         cout << "server: got connection from " << s << endl;
 
-        if (!fork()) { // this is the child process
-            close(sockfd); // child doesn't need the listener
-            if (send(new_fd, "220 system ready\r\n", 19, 0) == -1) {
-                cerr << "send: " << strerror(errno) << endl;
-                close(new_fd);
-                exit(2);
-            }
-            FILE *lf;
-            char buff[1000];
-            while(1) {
-                if(read(new_fd, buff, 999) < 0) {
-                    cerr << "read: " << strerror(errno) << endl;
-                    close(new_fd);
-                    exit(2);
-                }
-                if(strncmp(buff, "FILE", 4) == 0) {
-                    request = getFileName(buff);
-                    cout << "server: sending " << request << endl;
+        if (!fork()) {
+            close(sockfd);
 
-                    if((lf = fopen(request.c_str(), "r")) == NULL) {
-                        cerr << "server: Cannot open file " << request << endl;
-                        send(new_fd, "550 ERROR\n", 11, 0);
-                        close(new_fd);
-                        exit(2);
-                    }
-                    memset(&buff, 0, 1000);
-                    int cycles = 0;
-                    gettimeofday(&tv, NULL);
-                    time_total = tv.tv_usec;
-                    while((bytes = fread(buff, sizeof(char), 999, lf)) > 0) {
-                        temp += bytes;
-                        gettimeofday(&tv, NULL);
-                        time = tv.tv_usec;
-                        send(new_fd, buff, bytes, 0);
-                        cycles++;
-                        memset(&buff, 0, 1000);
-                        gettimeofday(&tv, NULL);
-                        if(cycles >= atoi(destination.speed.c_str())) {
-                            if((time_total = tv.tv_usec - time) > 1000000)
-                                time_total = 1000000;
-                            usleep(1000000 - time_total);
-                            cycles = 0;
-                        }
-                    }
-                    gettimeofday(&tv, NULL);
-                    cout << "server: bytes sent: " << temp << endl;
-                    fflush(stdout);
-                    break;
-                } else {
-                    cerr << "Error on the network occurred." << endl;
-                    close(new_fd);
-                    fclose(lf);
-                    exit(2);
-                }
-            }
-            fclose(lf);
+            serve_client(new_fd);
+
             close(new_fd);
             exit(0);
         }
@@ -194,6 +139,68 @@ int main(int argc, char **argv) {
     }
 
     return 0;
+}
+
+void serve_client(int new_fd) {
+    FILE *lf;
+    char buff[1000];
+    string request;
+    struct timeval tv = { 0 };
+    long int time, time_total;
+    int bytes = 0, temp = 0;
+
+    if (send(new_fd, "220 system ready\r\n", 19, 0) == -1) {
+        cerr << "send: " << strerror(errno) << endl;
+        close(new_fd);
+        exit(2);
+    }
+
+    while(1) {
+        if(read(new_fd, buff, 999) < 0) {
+            cerr << "read: " << strerror(errno) << endl;
+            close(new_fd);
+            exit(2);
+        }
+        if(strncmp(buff, "FILE", 4) == 0) {
+            request = getFileName(buff);
+            cout << "server: sending " << request << endl;
+
+            if((lf = fopen(request.c_str(), "r")) == NULL) {
+                cerr << "server: Cannot open file " << request << endl;
+                send(new_fd, "550 ERROR\n", 11, 0);
+                close(new_fd);
+                exit(2);
+            }
+            memset(&buff, 0, 1000);
+            int cycles = 0;
+            gettimeofday(&tv, NULL);
+            time_total = tv.tv_usec;
+            while((bytes = fread(buff, sizeof(char), 999, lf)) > 0) {
+                temp += bytes;
+                gettimeofday(&tv, NULL);
+                time = tv.tv_usec;
+                send(new_fd, buff, bytes, 0);
+                cycles++;
+                memset(&buff, 0, 1000);
+                gettimeofday(&tv, NULL);
+                if(cycles >= atoi(destination.speed.c_str())) {
+                    if((time_total = tv.tv_usec - time) > 1000000)
+                        time_total = 1000000;
+                    usleep(1000000 - time_total);
+                    cycles = 0;
+                }
+            }
+            gettimeofday(&tv, NULL);
+            cout << "server: bytes sent: " << temp << endl;
+            fflush(stdout);
+            break;
+        } else {
+            cerr << "Error on the network occurred." << endl;
+            close(new_fd);
+            fclose(lf);
+            exit(2);
+        }
+    }
 }
 
 /*
@@ -238,22 +245,7 @@ string form_string(char* input, int begin, int end) {
     return output;
 }
 
-/*
- * Beej
- */
 void sigchld_handler(int s)
 {
     while(waitpid(-1, NULL, WNOHANG) > 0);
-}
-
-/*
- * Beej
- */
-void *get_in_addr(struct sockaddr *sa)
-{
-    if (sa->sa_family == AF_INET) {
-        return &(((struct sockaddr_in*)sa)->sin_addr);
-    }
-
-    return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
